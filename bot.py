@@ -8,30 +8,28 @@ from email.mime.multipart import MIMEMultipart
 from anthropic import Anthropic
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN", "8580976907:AAGR4jmA0qrn6vw8RlSoszpP7uIxnYUuc98")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7711190329")
-ODDS_API_KEY    = os.getenv("ODDS_API_KEY", "08c2d60df2bf862873f6f3a32e93ad1c")
-GMAIL_ADDRESS   = os.getenv("GMAIL_ADDRESS", "LFT.Trades05@gmail.com")
-GMAIL_APP_PASS  = os.getenv("GMAIL_APP_PASS", "xutl ivtg whbf rree")
-RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "LFT.Trades05@gmail.com")
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN", "8580976907:AAGR4jmA0qrn6vw8RlSoszpP7uIxnYUuc98")
+TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID", "7711190329")
+ODDS_API_KEY      = os.getenv("ODDS_API_KEY", "08c2d60df2bf862873f6f3a32e93ad1c")
+GMAIL_ADDRESS     = os.getenv("GMAIL_ADDRESS", "LFT.Trades05@gmail.com")
+GMAIL_APP_PASS    = os.getenv("GMAIL_APP_PASS", "xutl ivtg whbf rree")
+RECIPIENT_EMAIL   = os.getenv("RECIPIENT_EMAIL", "LFT.Trades05@gmail.com")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+RACING_API_USER   = os.getenv("RACING_API_USER", "fbt79UdYj5Hz1MDU2XwjVBXx")
+RACING_API_PASS   = os.getenv("RACING_API_PASS", "ZR7xiE3NDqHBJG33PRhNPyYs")
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# ── Fetch Odds ─────────────────────────────────────────────────────────────────
-def fetch_odds():
-sports = [
+# ── Fetch Football Odds ────────────────────────────────────────────────────────
+def fetch_football_odds():
+    sports = [
         "soccer_epl",
         "soccer_uefa_champs_league",
         "soccer_efl_champ",
         "soccer_england_league1",
         "soccer_england_league2",
-        "horse_racing-greyhound_racing_uk",
-        "horse_racing_uk",
-        "horse_racing_intl",
     ]
     all_odds = []
-
     for sport in sports:
         try:
             url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
@@ -45,115 +43,125 @@ sports = [
             r = requests.get(url, params=params, timeout=10)
             if r.status_code == 200:
                 data = r.json()
-                for event in data[:5]:  # top 5 per sport
+                for event in data[:5]:
                     all_odds.append({
                         "sport": sport,
                         "home_team": event.get("home_team", ""),
                         "away_team": event.get("away_team", ""),
                         "commence_time": event.get("commence_time", ""),
-                        "bookmakers": event.get("bookmakers", [])[:2],
+                        "bookmakers": event.get("bookmakers", [])[:3],
                     })
         except Exception as e:
             print(f"Error fetching {sport}: {e}")
-
     return all_odds
 
-# ── Ask Claude to Analyse ──────────────────────────────────────────────────────
-def analyse_bets(odds_data):
-    today = datetime.now().strftime("%A %d %B %Y")
+# ── Fetch Horse Racing Data ────────────────────────────────────────────────────
+def fetch_horse_racing():
+    today = datetime.now().strftime("%Y-%m-%d")
+    auth = (RACING_API_USER, RACING_API_PASS)
+    races = []
 
-    odds_summary = json.dumps(odds_data, indent=2)
+    try:
+        url = "https://api.theracingapi.com/v1/racecards/pro"
+        params = {"date": today, "region": "gb"}
+        r = requests.get(url, auth=auth, params=params, timeout=15)
+        print(f"Racing API status: {r.status_code}")
+
+        if r.status_code == 200:
+            data = r.json()
+            racecards = data.get("racecards", [])
+            print(f"Found {len(racecards)} races today")
+
+            for race in racecards[:12]:
+                runners = []
+                for horse in race.get("runners", []):
+                    best_odds = None
+                    best_bookie = ""
+                    for bookie in horse.get("odds", []):
+                        odds_val = bookie.get("decimal_odds") or bookie.get("odds_decimal")
+                        if odds_val and (best_odds is None or float(odds_val) > float(best_odds)):
+                            best_odds = float(odds_val)
+                            best_bookie = bookie.get("bookmaker", "")
+
+                    runners.append({
+                        "horse": horse.get("horse", ""),
+                        "jockey": horse.get("jockey", ""),
+                        "trainer": horse.get("trainer", ""),
+                        "form": horse.get("form", ""),
+                        "age": horse.get("age", ""),
+                        "best_odds": best_odds,
+                        "best_bookie": best_bookie,
+                        "official_rating": horse.get("official_rating", ""),
+                    })
+
+                runners.sort(key=lambda x: x["best_odds"] if x["best_odds"] else 999)
+
+                races.append({
+                    "race_name": race.get("race_name", ""),
+                    "venue": race.get("course", ""),
+                    "time": race.get("off_time", ""),
+                    "distance": race.get("distance", ""),
+                    "going": race.get("going", ""),
+                    "race_class": race.get("race_class", ""),
+                    "runners": runners[:8],
+                })
+
+        elif r.status_code == 401:
+            print("Racing API auth failed")
+        else:
+            print(f"Racing API error: {r.text[:200]}")
+
+    except Exception as e:
+        print(f"Horse racing fetch error: {e}")
+
+    return races
+
+# ── Ask Claude to Analyse ──────────────────────────────────────────────────────
+def analyse_bets(football_odds, horse_races):
+    today = datetime.now().strftime("%A %d %B %Y")
+    football_summary = json.dumps(football_odds, indent=2)
+    racing_summary = json.dumps(horse_races, indent=2)
 
     prompt = f"""
-You are an expert sports betting analyst. Today is {today}.
+You are an expert UK sports betting analyst. Today is {today}.
 
-Here is today's live odds data from UK bookmakers across football and horse racing:
+FOOTBALL ODDS (live from UK bookmakers):
+{football_summary}
 
-{odds_summary}
+TODAY'S UK HORSE RACING CARDS (live data with best odds per bookmaker):
+{racing_summary}
 
-Your job:
-1. Analyse each event and its odds
-2. Use your knowledge of current form, team news, historical performance, and value betting principles
-3. Select the TOP 6 best bets of the day
-4. Rank them from most confident to most risky
-5. Split into 3 tiers: BEST (2 picks), MEDIUM (2 picks), RISKY (2 picks)
+Pick the TOP 6 bets: 4 football + 2 horse racing.
+For horses: pick based on form (1s and 2s = good), official rating, going conditions, and best_odds value.
+Always use the best_odds value from the data for horses and name the best_bookie.
+Rank all 6 from most confident to most risky across 3 tiers: BEST (2), MEDIUM (2), RISKY (2).
+At least 1 horse pick must appear in BEST or MEDIUM.
 
-For each pick provide:
-- Event name
-- Your recommended bet (which team/outcome to back)
-- The best decimal odds available
-- Confidence % (your estimated real probability)
-- Value rating (odds vs real probability — is this good value?)
-- 2-3 sentence analysis explaining WHY this is a good bet
-
-Respond ONLY in this exact JSON format, no extra text:
+Respond ONLY in this exact JSON, no extra text:
 {{
   "date": "{today}",
   "best": [
-    {{
-      "event": "Team A vs Team B",
-      "bet": "Team A to Win",
-      "odds": 2.10,
-      "confidence": 58,
-      "value": "High",
-      "analysis": "Your reasoning here."
-    }},
-    {{
-      "event": "Team C vs Team D",
-      "bet": "Under 2.5 Goals",
-      "odds": 1.85,
-      "confidence": 62,
-      "value": "High",
-      "analysis": "Your reasoning here."
-    }}
+    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "Bet365", "confidence": 58, "value": "High", "analysis": "reason"}},
+    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "Betfair", "confidence": 58, "value": "High", "analysis": "reason"}}
   ],
   "medium": [
-    {{
-      "event": "Team E vs Team F",
-      "bet": "Team E to Win",
-      "odds": 2.50,
-      "confidence": 48,
-      "value": "Medium",
-      "analysis": "Your reasoning here."
-    }},
-    {{
-      "event": "Team G vs Team H",
-      "bet": "Both Teams to Score",
-      "odds": 1.72,
-      "confidence": 55,
-      "value": "Medium",
-      "analysis": "Your reasoning here."
-    }}
+    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "Paddy Power", "confidence": 48, "value": "Medium", "analysis": "reason"}},
+    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "William Hill", "confidence": 48, "value": "Medium", "analysis": "reason"}}
   ],
   "risky": [
-    {{
-      "event": "Team I vs Team J",
-      "bet": "Team J to Win",
-      "odds": 4.50,
-      "confidence": 35,
-      "value": "High",
-      "analysis": "Your reasoning here."
-    }},
-    {{
-      "event": "Team K vs Team L",
-      "bet": "Team K -1 Asian Handicap",
-      "odds": 2.20,
-      "confidence": 40,
-      "value": "Medium",
-      "analysis": "Your reasoning here."
-    }}
+    {{"event": "name", "bet": "bet", "odds": 4.50, "best_bookie": "Coral", "confidence": 35, "value": "High", "analysis": "reason"}},
+    {{"event": "name", "bet": "bet", "odds": 2.20, "best_bookie": "Ladbrokes", "confidence": 40, "value": "Medium", "analysis": "reason"}}
   ]
 }}
 """
 
     message = client.messages.create(
         model="claude-opus-4-5",
-        max_tokens=2000,
+        max_tokens=2500,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = message.content[0].text.strip()
-    # Strip markdown fences if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -164,7 +172,7 @@ Respond ONLY in this exact JSON format, no extra text:
 def format_telegram(picks):
     date = picks["date"]
     lines = []
-    lines.append(f"🏆 *LFT DAILY BETTING PICKS*")
+    lines.append("🏆 *LFT DAILY BETTING PICKS*")
     lines.append(f"📅 {date}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
@@ -177,9 +185,12 @@ def format_telegram(picks):
     for tier_name, tier_picks in tiers:
         lines.append(f"\n*{tier_name}*")
         for p in tier_picks:
-            lines.append(f"\n⚽ *{p['event']}*")
+            is_horse = " - " in p["event"] or any(x in p["event"] for x in ["Cheltenham","Ascot","Newmarket","Sandown","Kempton","York","Doncaster","Haydock","Lingfield","Windsor"])
+            emoji = "🐴" if is_horse else "⚽"
+            lines.append(f"\n{emoji} *{p['event']}*")
             lines.append(f"📌 Bet: {p['bet']}")
-            lines.append(f"💰 Odds: {p['odds']} | Confidence: {p['confidence']}% | Value: {p['value']}")
+            bookie = f" @ {p.get('best_bookie','')}" if p.get('best_bookie') else ""
+            lines.append(f"💰 Odds: {p['odds']}{bookie} | Confidence: {p['confidence']}% | Value: {p['value']}")
             lines.append(f"📊 _{p['analysis']}_")
             lines.append("──────────────────")
 
@@ -191,17 +202,21 @@ def format_telegram(picks):
 def format_email_html(picks):
     date = picks["date"]
 
-    def tier_html(tier_picks, colour, label, emoji):
+    def tier_html(tier_picks, colour, label):
         rows = ""
         for p in tier_picks:
+            is_horse = " - " in p["event"] or any(x in p["event"] for x in ["Cheltenham","Ascot","Newmarket","Sandown","Kempton"])
+            emoji = "🐴" if is_horse else "⚽"
+            bookie_badge = f'<span style="background:#2a2000;padding:3px 8px;border-radius:4px;font-size:11px;color:#f0b429;border:1px solid #f0b42940;">📍 Best odds: {p.get("best_bookie","")}</span>' if p.get("best_bookie") else ""
             rows += f"""
             <div style="background:#1a1a1a;border-left:4px solid {colour};border-radius:8px;padding:16px;margin-bottom:12px;">
                 <div style="font-size:13px;color:#888;margin-bottom:6px;">{emoji} {p['event']}</div>
                 <div style="font-size:16px;font-weight:bold;color:#f0b429;margin-bottom:8px;">📌 {p['bet']}</div>
-                <div style="display:flex;gap:12px;margin-bottom:10px;flex-wrap:wrap;">
+                <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
                     <span style="background:#222;padding:4px 10px;border-radius:4px;font-size:12px;color:#ccc;">💰 Odds: <b style="color:#fff">{p['odds']}</b></span>
                     <span style="background:#222;padding:4px 10px;border-radius:4px;font-size:12px;color:#ccc;">🎯 Confidence: <b style="color:#fff">{p['confidence']}%</b></span>
                     <span style="background:#222;padding:4px 10px;border-radius:4px;font-size:12px;color:#ccc;">⚡ Value: <b style="color:#fff">{p['value']}</b></span>
+                    {bookie_badge}
                 </div>
                 <div style="font-size:13px;color:#aaa;line-height:1.6;">{p['analysis']}</div>
             </div>"""
@@ -212,26 +227,18 @@ def format_email_html(picks):
             {rows}
         </div>"""
 
-    best_html   = tier_html(picks["best"],   "#22c55e", "🟢 BEST BETS",   "⚽")
-    medium_html = tier_html(picks["medium"], "#f59e0b", "🟡 MEDIUM BETS", "⚽")
-    risky_html  = tier_html(picks["risky"],  "#ef4444", "🔴 RISKY BETS",  "⚽")
-
-    return f"""
-<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;background:#111;font-family:'Segoe UI',sans-serif;">
 <div style="max-width:600px;margin:0 auto;padding:24px;">
-
     <div style="text-align:center;margin-bottom:28px;">
         <div style="font-size:11px;letter-spacing:0.2em;color:#f0b429;margin-bottom:6px;">LOOKING FOR TRADES</div>
         <div style="font-size:26px;font-weight:bold;color:#fff;">🏆 Daily Betting Picks</div>
         <div style="font-size:13px;color:#666;margin-top:6px;">{date}</div>
     </div>
-
-    {best_html}
-    {medium_html}
-    {risky_html}
-
+    {tier_html(picks["best"],   "#22c55e", "🟢 BEST BETS")}
+    {tier_html(picks["medium"], "#f59e0b", "🟡 MEDIUM BETS")}
+    {tier_html(picks["risky"],  "#ef4444", "🔴 RISKY BETS")}
     <div style="border-top:1px solid #222;padding-top:16px;text-align:center;font-size:11px;color:#444;margin-top:8px;">
         // lf-trades · daily picks &nbsp;|&nbsp; Gamble responsibly. 18+ only.
     </div>
@@ -242,11 +249,7 @@ def format_email_html(picks):
 # ── Send Telegram ──────────────────────────────────────────────────────────────
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     r = requests.post(url, json=payload, timeout=10)
     print(f"Telegram: {r.status_code} - {r.text[:100]}")
 
@@ -257,7 +260,6 @@ def send_email(html_body, date):
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = RECIPIENT_EMAIL
     msg.attach(MIMEText(html_body, "html"))
-
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
         server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
@@ -265,20 +267,16 @@ def send_email(html_body, date):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Fetching odds...")
-    odds = fetch_odds()
-    print(f"Fetched {len(odds)} events")
-
-    print("Analysing with Claude...")
-    picks = analyse_bets(odds)
-
-    print("Formatting and sending...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting LFT Betting Bot...")
+    football_odds = fetch_football_odds()
+    print(f"Football: {len(football_odds)} events")
+    horse_races = fetch_horse_racing()
+    print(f"Racing: {len(horse_races)} races")
+    picks = analyse_bets(football_odds, horse_races)
     telegram_msg = format_telegram(picks)
-    email_html   = format_email_html(picks)
-
+    email_html = format_email_html(picks)
     send_telegram(telegram_msg)
     send_email(email_html, picks["date"])
-
     print("Done! Picks sent.")
 
 if __name__ == "__main__":
