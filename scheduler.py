@@ -17,7 +17,7 @@ print("LFT Betting Bot scheduler started — running daily at 07:00 AM")
 print("Press Ctrl+C to stop\n")
 
 # Uncomment the line below to test immediately on startup:
-job()
+# job()
 
 while True:
     schedule.run_pending()
