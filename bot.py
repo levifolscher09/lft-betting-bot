@@ -15,8 +15,6 @@ GMAIL_ADDRESS     = os.getenv("GMAIL_ADDRESS", "LFT.Trades05@gmail.com")
 GMAIL_APP_PASS    = os.getenv("GMAIL_APP_PASS", "xutl ivtg whbf rree")
 RECIPIENT_EMAIL   = os.getenv("RECIPIENT_EMAIL", "LFT.Trades05@gmail.com")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-RACING_API_USER   = os.getenv("RACING_API_USER", "fbt79UdYj5Hz1MDU2XwjVBXx")
-RACING_API_PASS   = os.getenv("RACING_API_PASS", "ZR7xiE3NDqHBJG33PRhNPyYs")
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -55,118 +53,76 @@ def fetch_football_odds():
             print(f"Error fetching {sport}: {e}")
     return all_odds
 
-# ── Fetch Horse Racing Data ────────────────────────────────────────────────────
-def fetch_horse_racing():
-    today = datetime.now().strftime("%Y-%m-%d")
-    auth = (RACING_API_USER, RACING_API_PASS)
-    races = []
-
-    try:
-        url = "https://api.theracingapi.com/v1/racecards/pro"
-        params = {"date": today, "region": "gb"}
-        r = requests.get(url, auth=auth, params=params, timeout=15)
-        print(f"Racing API status: {r.status_code}")
-
-        if r.status_code == 200:
-            data = r.json()
-            racecards = data.get("racecards", [])
-            print(f"Found {len(racecards)} races today")
-
-            for race in racecards[:12]:
-                runners = []
-                for horse in race.get("runners", []):
-                    best_odds = None
-                    best_bookie = ""
-                    for bookie in horse.get("odds", []):
-                        odds_val = bookie.get("decimal_odds") or bookie.get("odds_decimal")
-                        if odds_val and (best_odds is None or float(odds_val) > float(best_odds)):
-                            best_odds = float(odds_val)
-                            best_bookie = bookie.get("bookmaker", "")
-
-                    runners.append({
-                        "horse": horse.get("horse", ""),
-                        "jockey": horse.get("jockey", ""),
-                        "trainer": horse.get("trainer", ""),
-                        "form": horse.get("form", ""),
-                        "age": horse.get("age", ""),
-                        "best_odds": best_odds,
-                        "best_bookie": best_bookie,
-                        "official_rating": horse.get("official_rating", ""),
-                    })
-
-                runners.sort(key=lambda x: x["best_odds"] if x["best_odds"] else 999)
-
-                races.append({
-                    "race_name": race.get("race_name", ""),
-                    "venue": race.get("course", ""),
-                    "time": race.get("off_time", ""),
-                    "distance": race.get("distance", ""),
-                    "going": race.get("going", ""),
-                    "race_class": race.get("race_class", ""),
-                    "runners": runners[:8],
-                })
-
-        elif r.status_code == 401:
-            print("Racing API auth failed")
-        else:
-            print(f"Racing API error: {r.text[:200]}")
-
-    except Exception as e:
-        print(f"Horse racing fetch error: {e}")
-
-    return races
-
-# ── Ask Claude to Analyse ──────────────────────────────────────────────────────
-def analyse_bets(football_odds, horse_races):
+# ── Ask Claude to Analyse with Web Search ─────────────────────────────────────
+def analyse_bets(football_odds):
     today = datetime.now().strftime("%A %d %B %Y")
     football_summary = json.dumps(football_odds, indent=2)
-    racing_summary = json.dumps(horse_races, indent=2)
 
-    prompt = f"""
-You are an expert UK sports betting analyst. Today is {today}.
+    prompt = f"""You are an expert UK sports betting analyst. Today is {today}.
 
-FOOTBALL ODDS (live from UK bookmakers):
+STEP 1 - Search the web for today's best UK horse racing tips and odds.
+Search for: "best horse racing tips today {today} UK oddschecker"
+Also search for: "horse racing tips {today} racing post"
+Find real horses running TODAY with their current best odds from UK bookmakers.
+
+STEP 2 - Here is today's live football odds data:
 {football_summary}
 
-TODAY'S UK HORSE RACING CARDS (live data with best odds per bookmaker):
-{racing_summary}
-
-Pick the TOP 6 bets: 4 football + 2 horse racing.
-For horses: pick based on form (1s and 2s = good), official rating, going conditions, and best_odds value.
-Always use the best_odds value from the data for horses and name the best_bookie.
+STEP 3 - Pick the TOP 6 bets total: 4 football + 2 horse racing.
+For horse racing use the real horses, races and best odds you found in your search.
+For each horse include which bookmaker has the best odds.
 Rank all 6 from most confident to most risky across 3 tiers: BEST (2), MEDIUM (2), RISKY (2).
-At least 1 horse pick must appear in BEST or MEDIUM.
+At least 1 horse pick must be in BEST or MEDIUM tier.
 
-Respond ONLY in this exact JSON, no extra text:
+Respond ONLY in this exact JSON, no extra text, no markdown:
 {{
   "date": "{today}",
   "best": [
-    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "Bet365", "confidence": 58, "value": "High", "analysis": "reason"}},
-    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "Betfair", "confidence": 58, "value": "High", "analysis": "reason"}}
+    {{"event": "Team A vs Team B", "bet": "Team A to Win", "odds": 2.10, "best_bookie": "Bet365", "confidence": 58, "value": "High", "analysis": "Reasoning here."}},
+    {{"event": "Horse Name - Venue HH:MM", "bet": "Horse Name to Win", "odds": 3.50, "best_bookie": "Paddy Power", "confidence": 45, "value": "High", "analysis": "Reasoning here."}}
   ],
   "medium": [
-    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "Paddy Power", "confidence": 48, "value": "Medium", "analysis": "reason"}},
-    {{"event": "name", "bet": "bet", "odds": 2.10, "best_bookie": "William Hill", "confidence": 48, "value": "Medium", "analysis": "reason"}}
+    {{"event": "Team E vs Team F", "bet": "Team E to Win", "odds": 2.50, "best_bookie": "William Hill", "confidence": 48, "value": "Medium", "analysis": "Reasoning here."}},
+    {{"event": "Team G vs Team H", "bet": "BTTS", "odds": 1.72, "best_bookie": "Betfair", "confidence": 55, "value": "Medium", "analysis": "Reasoning here."}}
   ],
   "risky": [
-    {{"event": "name", "bet": "bet", "odds": 4.50, "best_bookie": "Coral", "confidence": 35, "value": "High", "analysis": "reason"}},
-    {{"event": "name", "bet": "bet", "odds": 2.20, "best_bookie": "Ladbrokes", "confidence": 40, "value": "Medium", "analysis": "reason"}}
+    {{"event": "Team I vs Team J", "bet": "Team J to Win", "odds": 4.50, "best_bookie": "Coral", "confidence": 35, "value": "High", "analysis": "Reasoning here."}},
+    {{"event": "Team K vs Team L", "bet": "Team K -1 Handicap", "odds": 2.20, "best_bookie": "Ladbrokes", "confidence": 40, "value": "Medium", "analysis": "Reasoning here."}}
   ]
-}}
-"""
+}}"""
 
     message = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=2500,
+        tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw = message.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+    # Extract final text block (comes after tool use)
+    raw = ""
+    for block in message.content:
+        if hasattr(block, "text"):
+            raw = block.text  # keep overwriting — we want the last text block
+
+    raw = raw.strip()
+    # Strip markdown fences if present
+    if "```" in raw:
+        parts = raw.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            if part.startswith("{"):
+                raw = part
+                break
+
+    # Find JSON object in raw text
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start != -1 and end > start:
+        raw = raw[start:end]
+
+    return json.loads(raw)
 
 # ── Format Telegram Message ────────────────────────────────────────────────────
 def format_telegram(picks):
@@ -185,7 +141,11 @@ def format_telegram(picks):
     for tier_name, tier_picks in tiers:
         lines.append(f"\n*{tier_name}*")
         for p in tier_picks:
-            is_horse = " - " in p["event"] or any(x in p["event"] for x in ["Cheltenham","Ascot","Newmarket","Sandown","Kempton","York","Doncaster","Haydock","Lingfield","Windsor"])
+            is_horse = " - " in p["event"] or any(x in p["event"] for x in [
+                "Cheltenham","Ascot","Newmarket","Sandown","Kempton","York",
+                "Doncaster","Haydock","Lingfield","Windsor","Goodwood","Epsom",
+                "Leicester","Nottingham","Wolverhampton","Chester"
+            ])
             emoji = "🐴" if is_horse else "⚽"
             lines.append(f"\n{emoji} *{p['event']}*")
             lines.append(f"📌 Bet: {p['bet']}")
@@ -205,7 +165,9 @@ def format_email_html(picks):
     def tier_html(tier_picks, colour, label):
         rows = ""
         for p in tier_picks:
-            is_horse = " - " in p["event"] or any(x in p["event"] for x in ["Cheltenham","Ascot","Newmarket","Sandown","Kempton"])
+            is_horse = " - " in p["event"] or any(x in p["event"] for x in [
+                "Cheltenham","Ascot","Newmarket","Sandown","Kempton","York","Doncaster"
+            ])
             emoji = "🐴" if is_horse else "⚽"
             bookie_badge = f'<span style="background:#2a2000;padding:3px 8px;border-radius:4px;font-size:11px;color:#f0b429;border:1px solid #f0b42940;">📍 Best odds: {p.get("best_bookie","")}</span>' if p.get("best_bookie") else ""
             rows += f"""
@@ -220,7 +182,6 @@ def format_email_html(picks):
                 </div>
                 <div style="font-size:13px;color:#aaa;line-height:1.6;">{p['analysis']}</div>
             </div>"""
-
         return f"""
         <div style="margin-bottom:28px;">
             <div style="font-size:11px;font-weight:bold;letter-spacing:0.1em;color:{colour};margin-bottom:12px;">{label}</div>
@@ -269,10 +230,9 @@ def send_email(html_body, date):
 def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting LFT Betting Bot...")
     football_odds = fetch_football_odds()
-    print(f"Football: {len(football_odds)} events")
-    horse_races = fetch_horse_racing()
-    print(f"Racing: {len(horse_races)} races")
-    picks = analyse_bets(football_odds, horse_races)
+    print(f"Football: {len(football_odds)} events fetched")
+    print("Analysing with Claude + web search for horse racing...")
+    picks = analyse_bets(football_odds)
     telegram_msg = format_telegram(picks)
     email_html = format_email_html(picks)
     send_telegram(telegram_msg)
