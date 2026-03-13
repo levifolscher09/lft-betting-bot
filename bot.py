@@ -20,12 +20,15 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # ── Fetch Odds ─────────────────────────────────────────────────────────────────
 def fetch_odds():
-    sports = [
+sports = [
         "soccer_epl",
         "soccer_uefa_champs_league",
         "soccer_efl_champ",
         "soccer_england_league1",
+        "soccer_england_league2",
+        "horse_racing-greyhound_racing_uk",
         "horse_racing_uk",
+        "horse_racing_intl",
     ]
     all_odds = []
 
