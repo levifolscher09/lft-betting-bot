@@ -4,19 +4,28 @@ from datetime import datetime
 from bot import main
 
 def job():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Running LFT Betting Bot...")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Running LFT Bot v3...")
     try:
         main()
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
 
-# Schedule for 7:00 AM UK time every day
 schedule.every().day.at("07:00").do(job)
 
-print("LFT Betting Bot scheduler started — running daily at 07:00 AM")
-print("Press Ctrl+C to stop\n")
+print("LFT Bot v3 — running daily at 07:00 AM UK time")
+print("Features:")
+print("  - Full historical intelligence across all data")
+print("  - Auto-evolving strategy rules")
+print("  - Losing streak detection + auto-adjustment")
+print("  - Confidence calibration")
+print("  - Kelly staking with risk adjustment")
+print("  - Football results API + web search fallback")
+print("  - Weather/going conditions for horse racing")
+print("  - Weekly deep report every Sunday\n")
 
-# Uncomment the line below to test immediately on startup:
+# Uncomment to test immediately:
 # job()
 
 while True:
