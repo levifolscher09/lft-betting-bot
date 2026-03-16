@@ -319,51 +319,20 @@ def analyse_all_sports(odds_data, intelligence_summary):
     nfl_str  = json.dumps(odds_data.get("nfl",[]), indent=1)
     golf_str = json.dumps(odds_data.get("golf_pga",[]), indent=1)
 
-    prompt = f"""You are an expert multi-sport betting AI. Today is {today}.
+    prompt = f"""Expert UK sports betting AI. Today is {today}.
 
-HISTORICAL PERFORMANCE (use to shape picks):
-{intelligence_summary}
+HISTORY: {intelligence_summary}
 
-LIVE ODDS DATA:
-NBA: {nba_str}
-NFL (futures/props): {nfl_str}
-Golf (PGA): {golf_str}
+NBA ODDS: {nba_str}
 
-YOUR TASK — produce 4 picks per sport, 16 total:
+TASK - 16 picks total, 4 per sport:
+1. HORSE RACING: Search "horse racing tips {today} UK nap value" - find 4 real horses today
+2. NFL: Search "NFL 2026 futures draft odds" - pick 4 futures/props with real UK odds
+3. NBA: Use odds above + search "NBA picks {today}" - pick 4 best value bets
+4. GOLF: Search "PGA Tour tips {today} top 10 h2h" - pick 4 (2x top10 + 2x h2h)
 
-1. HORSE RACING (4 picks)
-Search: "best horse racing tips {today} UK value nap"
-Search: "horse racing tips today {today} racing post oddschecker"
-Find 4 real UK horses running TODAY. Include horse name, venue, race time, best odds, bookmaker, form analysis.
-Mix: win bets + each way bets on bigger prices.
-
-2. NFL (4 picks)
-It is the NFL off-season. Pick 4 futures/props:
-- Draft pick predictions (who goes where)
-- Season win totals (over/under wins for a team)
-- Division winner predictions
-- Super Bowl winner odds
-Search: "NFL 2026 draft predictions odds" and "NFL 2026 season futures best bets"
-Find real odds from UK bookmakers.
-
-3. NBA (4 picks)
-Use the live odds above + search for:
-Search: "NBA picks today {today} best bets predictions"
-Pick 4 NBA bets — game winners, spreads, or player props with best value.
-
-4. GOLF (4 picks)
-Search: "PGA Tour golf tournament this week {today} tips odds"
-Search: "golf betting tips this week top 10 finish h2h"
-Find the current PGA Tour event. Pick 4 bets:
-- 2x Top 10 finish bets
-- 2x Head to head matchup bets
-Use real player names, real odds, real bookmakers.
-
-RULES:
-- Use historical data — avoid bet types that have been losing
-- Apply confidence calibration from history
-- Each pick needs: event, bet, decimal odds, best bookmaker, confidence %, value rating, analysis
-- 4 tiers across each sport: BEST(1), MEDIUM(2), RISKY(1)
+Each pick: event, bet, decimal odds, bookmaker, confidence%, value, analysis.
+Tiers per sport: BEST(1) MEDIUM(2) RISKY(1).
 
 Output ONLY this JSON, no markdown, no extra text:
 {{
@@ -821,8 +790,18 @@ def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] LFT Bot v4 starting...")
     init_db()
 
-    # Auto-seed on first run if database is empty
-    auto_seed_if_empty()
+    # Check if seeding needed — if so, seed and exit, let next run do picks
+    conn_check = get_db()
+    c_check = conn_check.cursor()
+    c_check.execute("SELECT COUNT(*) FROM picks WHERE result != 'pending'")
+    existing_count = c_check.fetchone()[0]
+    conn_check.close()
+
+    if existing_count < 20:
+        print("Database empty — seeding history now. Picks will run at next scheduled time.")
+        auto_seed_if_empty()
+        print("Seeding done. Bot will send picks at 7AM tomorrow.")
+        return
 
     print("Checking pending results...")
     check_pending_results()
