@@ -1,1 +1,1 @@
-worker: python seed_history.py
+worker: python scheduler.py
