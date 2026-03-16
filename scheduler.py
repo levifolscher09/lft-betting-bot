@@ -26,7 +26,7 @@ print("  - Weather/going conditions for horse racing")
 print("  - Weekly deep report every Sunday\n")
 
 # Uncomment to test immediately:
-# job()
+ job()
 
 while True:
     schedule.run_pending()
