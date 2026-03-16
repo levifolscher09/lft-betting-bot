@@ -4,7 +4,7 @@ from datetime import datetime
 from bot import main
 
 def job():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Running LFT Bot v4...")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Running LFT Bot v5...")
     try:
         main()
     except Exception as e:
@@ -14,11 +14,12 @@ def job():
 
 schedule.every().day.at("07:00").do(job)
 
-print("LFT Bot v4 — Horse Racing | NFL | NBA | Golf")
+print("LFT Bot v5 — Horse Racing | NFL | NBA | Golf")
+print("Supabase database — persistent learning forever")
 print("Firing daily at 07:00 AM UK time\n")
 
-# Uncomment to test immediately:
-job()
+# Uncomment to test:
+# job()
 
 while True:
     schedule.run_pending()
