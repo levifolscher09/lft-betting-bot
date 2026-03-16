@@ -402,12 +402,24 @@ Output ONLY this JSON, no markdown, no extra text:
   }}
 }}"""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=3000,
-        tools=[{"type":"web_search_20250305","name":"web_search"}],
-        messages=[{"role":"user","content":prompt}]
-    )
+    import time
+
+    for attempt in range(3):
+        try:
+            message = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2500,
+                tools=[{"type":"web_search_20250305","name":"web_search"}],
+                messages=[{"role":"user","content":prompt}]
+            )
+            break
+        except Exception as e:
+            if "rate_limit" in str(e).lower() and attempt < 2:
+                wait = 60 * (attempt + 1)
+                print(f"Rate limit hit — waiting {wait}s before retry {attempt+2}/3...")
+                time.sleep(wait)
+            else:
+                raise
 
     raw = ""
     for block in message.content:
