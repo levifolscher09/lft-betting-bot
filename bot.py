@@ -30,7 +30,14 @@ SPORTS = {
 
 # ── Database ───────────────────────────────────────────────────────────────────
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    global DB_PATH
+    try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        conn_test = sqlite3.connect(DB_PATH)
+        conn_test.close()
+    except Exception:
+        DB_PATH = "lft_bot.db"
+        print(f"Volume not available — using local DB: {DB_PATH}")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
