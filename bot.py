@@ -682,9 +682,135 @@ def send_email(html_body, subject):
     print("Email sent")
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+def auto_seed_if_empty():
+    """Automatically seeds historical data if database is empty"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM picks WHERE result != 'pending'")
+    existing = c.fetchone()[0]
+    conn.close()
+
+    if existing >= 20:
+        print(f"Database has {existing} settled picks — skipping seed")
+        return
+
+    print("Database empty — auto-seeding 3 months of historical data...")
+    sports_queries = {
+        "horse_racing": [
+            f"best UK horse racing results winners December 2024 January 2025",
+            f"Cheltenham Newmarket horse racing results winners odds February 2025"
+        ],
+        "nba": [
+            f"NBA game results scores December 2024 January 2025 winners",
+            f"NBA betting results picks February 2025"
+        ],
+        "nfl": [
+            f"NFL game results scores playoffs January 2025",
+            f"NFL futures odds Super Bowl 2025 predictions results"
+        ],
+        "golf": [
+            f"PGA Tour tournament results winners top 10 December 2024 January 2025",
+            f"golf tournament results odds February 2025"
+        ]
+    }
+
+    total = 0
+    for sport, queries in sports_queries.items():
+        try:
+            query = queries[0]
+            prompt = f"""Search for: "{query}"
+
+Based on real results you find, generate 15 realistic historical betting picks for {sport}.
+Use REAL events, teams, horses, players from the search results.
+Apply realistic win rates: horse win 30%, horse EW 40%, NBA 53%, NFL game 52%, NFL future 25%, golf top10 35%, golf H2H 50%.
+
+Date range: 2024-12-01 to 2025-02-28
+Return ONLY a JSON array, no markdown:
+[
+  {{
+    "date": "2024-12-15",
+    "sport": "{sport}",
+    "event": "Real event name",
+    "bet": "Specific bet",
+    "odds": 2.5,
+    "confidence": 45,
+    "value": "High",
+    "tier": "medium",
+    "stake": 20.0,
+    "best_bookie": "Bet365",
+    "analysis": "Brief reason",
+    "result": "won",
+    "profit_loss": 30.0,
+    "bet_type": "win"
+  }}
+]"""
+
+            message = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=3000,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            raw = ""
+            for block in message.content:
+                if hasattr(block, "text"): raw = block.text
+
+            raw = raw.strip()
+            if "```" in raw:
+                for part in raw.split("```"):
+                    part = part.strip()
+                    if part.startswith("json"): part = part[4:].strip()
+                    if part.startswith("["): raw = part; break
+
+            start = raw.find("["); end = raw.rfind("]") + 1
+            if start == -1 or end <= start:
+                print(f"  No data for {sport}")
+                continue
+
+            picks = json.loads(raw[start:end])
+            conn2 = get_db()
+            c2 = conn2.cursor()
+            inserted = 0
+            for p in picks:
+                try:
+                    date = p.get("date","2025-01-15")
+                    try: day_name = datetime.strptime(date, "%Y-%m-%d").strftime("%A")
+                    except: day_name = "Monday"
+                    odds = float(p.get("odds", 2.0))
+                    stake = float(p.get("stake", 20.0))
+                    result = p.get("result","lost")
+                    pnl = round(stake*(odds-1),2) if result=="won" else -stake
+
+                    c2.execute("""
+                        INSERT INTO picks (date,sport,event,bet,odds,confidence,value,tier,
+                                          stake,best_bookie,analysis,result,profit_loss,
+                                          odds_band,day_of_week,bet_type,created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, (date, sport, p.get("event",""), p.get("bet",""),
+                          odds, int(p.get("confidence",40)), p.get("value","Medium"),
+                          p.get("tier","medium"), stake, p.get("best_bookie","Bet365"),
+                          p.get("analysis",""), result, pnl,
+                          get_odds_band(odds), day_name, p.get("bet_type","win"),
+                          datetime.now().isoformat()))
+                    inserted += 1
+                except Exception as e:
+                    pass
+            conn2.commit()
+            conn2.close()
+            total += inserted
+            print(f"  {sport}: {inserted} picks seeded")
+        except Exception as e:
+            print(f"  {sport} seed error: {e}")
+
+    print(f"Auto-seed complete: {total} historical picks loaded")
+
 def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] LFT Bot v4 starting...")
     init_db()
+
+    # Auto-seed on first run if database is empty
+    auto_seed_if_empty()
 
     print("Checking pending results...")
     check_pending_results()
