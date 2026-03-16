@@ -584,83 +584,65 @@ def analyse_bets(football_odds, intelligence, strategy_changes, losing_alerts, w
 
     weather_str = json.dumps(weather, indent=2) if weather else "No weather data available"
 
-    prompt = f"""You are an advanced self-learning UK sports betting AI. Today is {today}.
+    # Compact intelligence summary to avoid rate limits
+    overall = intelligence.get("overall", {})
+    best_sport = max(intelligence.get("by_sport", {}).items(), key=lambda x: x[1].get("roi", 0), default=("unknown", {}))
+    best_tier  = max(intelligence.get("by_tier", {}).items(), key=lambda x: x[1].get("roi", 0), default=("unknown", {}))
+    best_band  = max(intelligence.get("by_odds_band", {}).items(), key=lambda x: x[1].get("roi", 0), default=("unknown", {}))
+    day_pnl    = intelligence.get("by_day", {}).get(day_name, {}).get("pnl", "N/A")
 
-━━━ FULL HISTORICAL INTELLIGENCE ━━━
-{intel_str}
+    intel_compact = f"""Overall: {overall.get('total',0)} bets, {overall.get('win_rate',0)}% win rate, £{overall.get('pnl',0)} P&L, {overall.get('roi',0)}% ROI
+Best sport: {best_sport[0]} (ROI: {best_sport[1].get('roi','N/A')}%)
+Best tier: {best_tier[0]} (ROI: {best_tier[1].get('roi','N/A')}%)
+Best odds band: {best_band[0]} (ROI: {best_band[1].get('roi','N/A')}%)
+{day_name} P&L historically: £{day_pnl}
+Avoid: {', '.join(avoid_list) if avoid_list else 'none'}
+Prioritise: {', '.join(prioritise_list) if prioritise_list else 'best judgment'}
+Calibration: {cal_str.strip() if cal_str else 'no data yet'}
+30-day trend: £{intelligence.get('last_30_days_pnl', 0)}"""
 
-━━━ ACTIVE STRATEGY RULES (auto-evolved from your history) ━━━
-{json.dumps(rules, indent=2)}
+    # Compact football — just home/away/odds, no full bookmaker lists
+    football_compact = []
+    for e in football_odds[:10]:
+        best_odds = {}
+        for bm in e.get("bookmakers", [])[:2]:
+            for mkt in bm.get("markets", []):
+                if mkt["key"] == "h2h":
+                    for o in mkt.get("outcomes", []):
+                        name = o["name"]
+                        price = o["price"]
+                        if name not in best_odds or price > best_odds[name]["odds"]:
+                            best_odds[name] = {"odds": price, "bookie": bm["title"]}
+        football_compact.append({
+            "match": f"{e['home_team']} vs {e['away_team']}",
+            "time": e.get("commence_time","")[:16],
+            "odds": best_odds
+        })
 
-━━━ BET TYPES TO AVOID (losing streaks detected) ━━━
-{', '.join(avoid_list) if avoid_list else 'None currently'}
+    prompt = f"""You are an expert UK sports betting AI. Today is {today}.
 
-━━━ BET TYPES TO PRIORITISE (strong performers) ━━━
-{', '.join(prioritise_list) if prioritise_list else 'Use best judgment'}
+HISTORICAL PERFORMANCE:
+{intel_compact}
 
-━━━ CONFIDENCE CALIBRATION (MUST APPLY) ━━━
-{cal_str if cal_str else 'No calibration data yet — use best judgment'}
+FOOTBALL ODDS:
+{json.dumps(football_compact, indent=1)}
 
-━━━ WEATHER / GOING CONDITIONS ━━━
-{weather_str}
+TASK:
+1. Search web for 4 UK horse racing tips today - find real horses, venues, times, best odds, bookmaker
+2. Pick 2 best football value bets from the odds above
+3. Rank all 6: BEST(2), MEDIUM(2), RISKY(2) — at least 1 horse in BEST or MEDIUM
+4. Use historical data to favour what's been working, avoid what's been losing
 
-━━━ HORSE RACING — search and find 4 picks ━━━
-Search: "best horse racing tips today {today} value UK"
-Search: "horse racing nap today {today} racing post each way"
-Search: "horse racing tips {today} Cheltenham Newmarket Ascot Sandown"
+Search queries to use:
+- "best horse racing tips {today} UK value"
+- "horse racing nap today {today} racing post"
 
-For each horse find:
-- Horse name, venue, race time
-- Best decimal odds and which bookmaker
-- Recent form (last 5 runs)
-- Trainer and jockey
-- Distance and going suitability
-- Whether each way adds value
-
-Apply weather/going data where relevant.
-AVOID bet types flagged above. PRIORITISE bet types in strong form.
-
-━━━ FOOTBALL — analyse live odds ━━━
-{football_str}
-
-Find 2 best football value bets. Look at ALL markets — h2h, BTTS, over/under, handicap.
-Compare odds across all bookmakers listed to find genuine value.
-DO NOT pick bet types flagged as avoid above.
-
-━━━ TODAY'S DAY CONTEXT ━━━
-Historical P&L on {day_name}s: {intelligence.get('by_day',{}).get(day_name,{}).get('pnl','N/A')}
-Best odds band historically: {max(intelligence.get('by_odds_band',{}).items(), key=lambda x: x[1].get('roi',0), default=('unknown',''))[0] if intelligence.get('by_odds_band') else 'unknown'}
-
-━━━ OUTPUT FORMAT ━━━
-Respond ONLY in valid JSON, no markdown, no extra text:
-{{
-  "date": "{today}",
-  "strategy_note": "1 sentence on how historical data shaped today's picks",
-  "horse_racing": {{
-    "best": [
-      {{"event":"Horse - Venue HH:MM","bet":"Win/EW","odds":3.50,"best_bookie":"Paddy Power","confidence":50,"value":"High","bet_type":"win","analysis":"Form, going, trainer, why value."}}
-    ],
-    "medium": [
-      {{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.00,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"Reasoning."}},
-      {{"event":"Horse - Venue HH:MM","bet":"Each Way","odds":8.00,"best_bookie":"William Hill","confidence":32,"value":"Medium","bet_type":"each_way","analysis":"Reasoning."}}
-    ],
-    "risky": [
-      {{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.00,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"Reasoning."}}
-    ]
-  }},
-  "football": {{
-    "best": [
-      {{"event":"Team A vs Team B","bet":"Bet description","odds":1.90,"best_bookie":"Bet365","confidence":60,"value":"High","bet_type":"win","analysis":"Reasoning."}}
-    ],
-    "risky": [
-      {{"event":"Team C vs Team D","bet":"Bet description","odds":3.80,"best_bookie":"Coral","confidence":34,"value":"High","bet_type":"btts","analysis":"Reasoning."}}
-    ]
-  }}
-}}"""
+Output ONLY this JSON, no markdown:
+{{"date":"{today}","strategy_note":"1 sentence","horse_racing":{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win/EW","odds":3.5,"best_bookie":"Paddy Power","confidence":50,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":32,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}},"football":{{"best":[{{"event":"Team A vs Team B","bet":"bet","odds":1.9,"best_bookie":"Bet365","confidence":60,"value":"High","bet_type":"win","analysis":"reason"}}],"risky":[{{"event":"Team C vs Team D","bet":"bet","odds":3.8,"best_bookie":"Coral","confidence":34,"value":"High","bet_type":"btts","analysis":"reason"}}]}}}}"""
 
     message = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=3500,
+        model="claude-sonnet-4-5",
+        max_tokens=2000,
         tools=[{"type":"web_search_20250305","name":"web_search"}],
         messages=[{"role":"user","content":prompt}]
     )
