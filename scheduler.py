@@ -18,7 +18,7 @@ print("LFT Bot v4 — Horse Racing | NFL | NBA | Golf")
 print("Firing daily at 07:00 AM UK time\n")
 
 # Uncomment to test immediately:
-# job()
+job()
 
 while True:
     schedule.run_pending()
