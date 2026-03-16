@@ -619,26 +619,29 @@ Calibration: {cal_str.strip() if cal_str else 'no data yet'}
             "odds": best_odds
         })
 
+    has_football = len(football_compact) > 0
+    football_section = f"FOOTBALL ODDS:\n{json.dumps(football_compact, indent=1)}" if has_football else "FOOTBALL: No matches scheduled today."
+    football_task = "2. Pick 2 best football value bets from the odds above." if has_football else "2. No football today — pick 2 extra horse racing bets instead (6 horses total, split across tiers)."
+    football_json = '{"best":[{"event":"Team A vs Team B","bet":"bet","odds":1.9,"best_bookie":"Bet365","confidence":60,"value":"High","bet_type":"win","analysis":"reason"}],"medium":[],"risky":[{"event":"Team C vs Team D","bet":"bet","odds":3.8,"best_bookie":"Coral","confidence":34,"value":"High","bet_type":"btts","analysis":"reason"}]}' if has_football else '{"best":[],"medium":[],"risky":[]}\'
+
     prompt = f"""You are an expert UK sports betting AI. Today is {today}.
 
 HISTORICAL PERFORMANCE:
 {intel_compact}
 
-FOOTBALL ODDS:
-{json.dumps(football_compact, indent=1)}
+{football_section}
 
 TASK:
-1. Search web for 4 UK horse racing tips today - find real horses, venues, times, best odds, bookmaker
-2. Pick 2 best football value bets from the odds above
-3. Rank all 6: BEST(2), MEDIUM(2), RISKY(2) — at least 1 horse in BEST or MEDIUM
+1. Search web for UK horse racing tips today - find real horses, venues, times, best odds, bookmaker
+{football_task}
+3. Rank all picks: BEST(2), MEDIUM(2), RISKY(2)
 4. Use historical data to favour what's been working, avoid what's been losing
 
-Search queries to use:
-- "best horse racing tips {today} UK value"
-- "horse racing nap today {today} racing post"
+Search: "best horse racing tips {today} UK value"
+Search: "horse racing nap today {today} racing post"
 
-Output ONLY this JSON, no markdown:
-{{"date":"{today}","strategy_note":"1 sentence","horse_racing":{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win/EW","odds":3.5,"best_bookie":"Paddy Power","confidence":50,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":32,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}},"football":{{"best":[{{"event":"Team A vs Team B","bet":"bet","odds":1.9,"best_bookie":"Bet365","confidence":60,"value":"High","bet_type":"win","analysis":"reason"}}],"risky":[{{"event":"Team C vs Team D","bet":"bet","odds":3.8,"best_bookie":"Coral","confidence":34,"value":"High","bet_type":"btts","analysis":"reason"}}]}}}}"""
+Output ONLY valid JSON, no markdown:
+{{"date":"{today}","strategy_note":"1 sentence","horse_racing":{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win/EW","odds":3.5,"best_bookie":"Paddy Power","confidence":50,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":32,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}},"football":{football_json}}}"""
 
     message = client.messages.create(
         model="claude-sonnet-4-5",
