@@ -19,7 +19,7 @@ print("Supabase database — persistent learning forever")
 print("Firing daily at 07:00 AM UK time\n")
 
 # Uncomment to test:
-# job()
+job()
 
 while True:
     schedule.run_pending()
