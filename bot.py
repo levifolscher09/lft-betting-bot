@@ -622,7 +622,10 @@ Calibration: {cal_str.strip() if cal_str else 'no data yet'}
     has_football = len(football_compact) > 0
     football_section = f"FOOTBALL ODDS:\n{json.dumps(football_compact, indent=1)}" if has_football else "FOOTBALL: No matches scheduled today."
     football_task = "2. Pick 2 best football value bets from the odds above." if has_football else "2. No football today — pick 2 extra horse racing bets instead (6 horses total, split across tiers)."
-    football_json = '{"best":[{"event":"Team A vs Team B","bet":"bet","odds":1.9,"best_bookie":"Bet365","confidence":60,"value":"High","bet_type":"win","analysis":"reason"}],"medium":[],"risky":[{"event":"Team C vs Team D","bet":"bet","odds":3.8,"best_bookie":"Coral","confidence":34,"value":"High","bet_type":"btts","analysis":"reason"}]}' if has_football else '{"best":[],"medium":[],"risky":[]}\'
+    if has_football:
+        football_json = json.dumps({"best":[{"event":"Team A vs Team B","bet":"bet","odds":1.9,"best_bookie":"Bet365","confidence":60,"value":"High","bet_type":"win","analysis":"reason"}],"medium":[],"risky":[{"event":"Team C vs Team D","bet":"bet","odds":3.8,"best_bookie":"Coral","confidence":34,"value":"High","bet_type":"btts","analysis":"reason"}]})
+    else:
+        football_json = json.dumps({"best":[],"medium":[],"risky":[]})
 
     prompt = f"""You are an expert UK sports betting AI. Today is {today}.
 
