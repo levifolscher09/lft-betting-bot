@@ -596,26 +596,46 @@ def build_weekly_report():
     return report
 
 # ── Send ───────────────────────────────────────────────────────────────────────
+def escape_markdown(text):
+    """Escape special chars for Telegram MarkdownV2"""
+    # Only escape chars that break MarkdownV2 outside of formatting
+    for ch in ['_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(ch, f'\\{ch}')
+    return text
+
 def send_telegram(text):
-    chunks = [text[i:i+4000] for i in range(0,len(text),4000)]
+    """Send via plain text to avoid any markdown parsing errors"""
+    # Strip markdown formatting chars to send as plain text
+    clean = text.replace('*', '').replace('_', '').replace('`', '')
+    chunks = [clean[i:i+4000] for i in range(0, len(clean), 4000)]
     for chunk in chunks:
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id":TELEGRAM_CHAT_ID,"text":chunk,"parse_mode":"Markdown"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk},
             timeout=10
         )
-        print(f"Telegram: {r.status_code}")
+        if r.status_code != 200:
+            print(f"Telegram error {r.status_code}: {r.text[:100]}")
+        else:
+            print(f"Telegram: 200 OK")
 
 def send_email(html_body, subject):
+    """Try port 587 (STARTTLS) first — Railway blocks 465"""
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = RECIPIENT_EMAIL
-    msg.attach(MIMEText(html_body,"html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com",465) as server:
-        server.login(GMAIL_ADDRESS,GMAIL_APP_PASS)
-        server.sendmail(GMAIL_ADDRESS,RECIPIENT_EMAIL,msg.as_string())
-    print("Email sent")
+    msg.attach(MIMEText(html_body, "html"))
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
+            server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
+        print("Email sent (587/STARTTLS)")
+    except Exception as e:
+        print(f"Email failed (Railway may block SMTP): {e}")
+        print("Skipping email — picks already sent to Telegram")
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
