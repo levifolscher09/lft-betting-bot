@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from anthropic import Anthropic
+import anthropic as anthropic_lib
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN", "8580976907:AAGR4jmA0qrn6vw8RlSoszpP7uIxnYUuc98")
@@ -67,27 +68,6 @@ def sb_count(table, params=""):
     except: return 0
 
 def init_tables():
-    """Create tables via Supabase SQL RPC if they don't exist"""
-    sql = """
-    CREATE TABLE IF NOT EXISTS lft_picks (
-        id BIGSERIAL PRIMARY KEY,
-        date TEXT, sport TEXT, event TEXT, bet TEXT,
-        odds REAL, confidence INTEGER, value TEXT, tier TEXT,
-        stake REAL, best_bookie TEXT, analysis TEXT,
-        result TEXT DEFAULT 'pending', profit_loss REAL DEFAULT 0,
-        odds_band TEXT, day_of_week TEXT, bet_type TEXT,
-        created_at TEXT
-    );
-    CREATE TABLE IF NOT EXISTS lft_strategy_rules (
-        id BIGSERIAL PRIMARY KEY,
-        rule_key TEXT UNIQUE, rule_value TEXT,
-        reason TEXT, updated_at TEXT
-    );
-    """
-    url = f"{SUPABASE_URL}/rest/v1/rpc/exec_sql"
-    # Try direct table creation via PostgREST
-    # Tables created via Supabase dashboard or migrations
-    # We'll just verify connection works
     r = requests.get(f"{SUPABASE_URL}/rest/v1/lft_picks?limit=1", headers=SB_HEADERS, timeout=10)
     if r.status_code == 404 or (r.status_code == 200 and isinstance(r.json(), dict) and "code" in r.json()):
         print("WARNING: lft_picks table not found — please create it in Supabase dashboard")
@@ -127,6 +107,39 @@ def extract_bet_type(bet):
     if "win" in bet_l: return "win"
     return "other"
 
+# ── Claude API call with retry + backoff ──────────────────────────────────────
+def claude_call_with_retry(messages, max_tokens=1200, use_search=True, max_retries=5):
+    """
+    Wraps client.messages.create with exponential backoff on rate limit errors.
+    Keeps max_tokens low (default 1200) to reduce token burn per call.
+    """
+    tools = [{"type": "web_search_20250305", "name": "web_search"}] if use_search else []
+    for attempt in range(max_retries):
+        try:
+            kwargs = dict(
+                model="claude-sonnet-4-5",
+                max_tokens=max_tokens,
+                messages=messages,
+            )
+            if tools:
+                kwargs["tools"] = tools
+            return client.messages.create(**kwargs)
+        except anthropic_lib.RateLimitError as e:
+            if attempt == max_retries - 1:
+                raise
+            wait = 30 * (2 ** attempt)   # 30s, 60s, 120s, 240s
+            print(f"  ⏳ Rate limit hit — waiting {wait}s (attempt {attempt+1}/{max_retries})...")
+            time.sleep(wait)
+        except Exception as e:
+            raise
+
+def extract_text(message):
+    raw = ""
+    for block in message.content:
+        if hasattr(block, "text"):
+            raw = block.text
+    return raw.strip()
+
 # ── Strategy Evolution ─────────────────────────────────────────────────────────
 def evolve_strategy():
     changes = []
@@ -144,7 +157,6 @@ def evolve_strategy():
                 "reason":f"{bet_type} ({sport}) losing {losses}/{len(recent)}","updated_at":datetime.now().isoformat()})
             changes.append(f"⚠️ Deprioritising {bet_type} ({sport})")
 
-    # Losing days check
     picks_by_date = sb_get("lft_picks", "result=neq.pending&select=date,profit_loss&order=date.desc&limit=100")
     date_pnl = {}
     for p in picks_by_date:
@@ -177,14 +189,11 @@ def check_pending_results():
 Return ONLY JSON: {{"results":[{{"id":1,"result":"won"}},{{"id":2,"result":"lost"}},{{"id":3,"result":"unknown"}}]}}"""
 
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=800,
-            tools=[{"type":"web_search_20250305","name":"web_search"}],
-            messages=[{"role":"user","content":prompt}]
+        message = claude_call_with_retry(
+            messages=[{"role":"user","content":prompt}],
+            max_tokens=800
         )
-        raw = ""
-        for block in message.content:
-            if hasattr(block,"text"): raw = block.text
+        raw = extract_text(message)
         start = raw.find("{"); end = raw.rfind("}") + 1
         if start == -1: return
         data = json.loads(raw[start:end])
@@ -211,7 +220,6 @@ def build_intelligence():
     pnl   = sum(p.get("profit_loss",0) or 0 for p in all_picks)
     staked = sum(p.get("stake",0) or 0 for p in all_picks)
 
-    # By sport
     sport_stats = {}
     for p in all_picks:
         sp = p["sport"]
@@ -221,7 +229,6 @@ def build_intelligence():
         sport_stats[sp]["pnl"] += p.get("profit_loss",0) or 0
         sport_stats[sp]["st"]  += p.get("stake",0) or 0
 
-    # By bet type
     type_stats = {}
     for p in all_picks:
         bt = p.get("bet_type","")
@@ -230,11 +237,9 @@ def build_intelligence():
         type_stats[bt]["t"] += 1
         if p["result"]=="won": type_stats[bt]["w"] += 1
 
-    # Strategy rules
     rules = sb_get("lft_strategy_rules", "select=rule_key,rule_value")
     avoid = [r["rule_key"].replace("avoid_","") for r in rules if "deprioritise" in str(r.get("rule_value",""))]
 
-    # Build compact summary
     sport_summary = {}
     for sp, s in sport_stats.items():
         wr = round(s["w"]/s["t"]*100,1) if s["t"] else 0
@@ -263,7 +268,6 @@ def seed_if_empty():
         return False
 
     print(f"DB has {count} picks — seeding history...")
-    # Only seed horse racing to avoid rate limits
     prompt = """Search for UK horse racing results from December 2024 to February 2025.
 Find 20 real races with results.
 Return ONLY a JSON array:
@@ -272,15 +276,11 @@ Return ONLY a JSON array:
 Mix results: ~30% wins for win bets, ~40% for each way. Use real horse/venue names."""
 
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=3000,
-            tools=[{"type":"web_search_20250305","name":"web_search"}],
-            messages=[{"role":"user","content":prompt}]
+        message = claude_call_with_retry(
+            messages=[{"role":"user","content":prompt}],
+            max_tokens=2500
         )
-        raw = ""
-        for block in message.content:
-            if hasattr(block,"text"): raw = block.text
-        raw = raw.strip()
+        raw = extract_text(message)
         if "```" in raw:
             for part in raw.split("```"):
                 part = part.strip()
@@ -351,57 +351,91 @@ def fetch_live_odds():
             odds_data[label] = []
     return odds_data
 
-# ── Main Analysis ──────────────────────────────────────────────────────────────
+# ── Per-Sport Prompts ──────────────────────────────────────────────────────────
+SPORT_PROMPTS = {
+    "horse_racing": lambda today, intel: f"""Expert UK horse racing tipster. Today: {today}.
+HISTORY: {intel}
+Search: "horse racing tips {today} UK nap value selections"
+Pick 4 UK horse racing bets: 1 BEST, 2 MEDIUM, 1 RISKY.
+Use real race names, venues and times. Prefer each-way value at bigger prices.
+Output ONLY valid JSON (no markdown):
+{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":3.5,"best_bookie":"Paddy Power","confidence":52,"value":"High","bet_type":"win","analysis":"one sentence reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":33,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}}""",
+
+    "nfl": lambda today, intel: f"""Expert NFL betting analyst. Today: {today}.
+HISTORY: {intel}
+Search: "NFL 2026 futures Super Bowl odds best value draft picks"
+Pick 4 NFL futures/draft bets: 1 BEST, 2 MEDIUM, 1 RISKY.
+Output ONLY valid JSON (no markdown):
+{{"best":[{{"event":"NFL Future","bet":"Team X Super Bowl","odds":6.0,"best_bookie":"Bet365","confidence":25,"value":"High","bet_type":"future","analysis":"reason"}}],"medium":[{{"event":"NFL Draft","bet":"Player top 5","odds":2.5,"best_bookie":"Coral","confidence":45,"value":"High","bet_type":"future","analysis":"reason"}},{{"event":"NFL Season","bet":"Team over 9.5 wins","odds":1.9,"best_bookie":"William Hill","confidence":55,"value":"Medium","bet_type":"future","analysis":"reason"}}],"risky":[{{"event":"NFL Future","bet":"Team division","odds":4.0,"best_bookie":"Ladbrokes","confidence":30,"value":"High","bet_type":"future","analysis":"reason"}}]}}""",
+
+    "nba": lambda today, intel, odds_str="[]": f"""Expert NBA betting analyst. Today: {today}.
+HISTORY: {intel}
+LIVE ODDS: {odds_str}
+Search: "NBA picks {today} best bets predictions"
+Pick 4 NBA bets: 1 BEST, 2 MEDIUM, 1 RISKY. Use live odds above where possible.
+Output ONLY valid JSON (no markdown):
+{{"best":[{{"event":"Team A vs Team B","bet":"Team A Win","odds":1.85,"best_bookie":"Bet365","confidence":58,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Team C vs Team D","bet":"Team C -4.5","odds":1.9,"best_bookie":"William Hill","confidence":52,"value":"Medium","bet_type":"spread","analysis":"reason"}},{{"event":"Team E vs Team F","bet":"Over 224.5","odds":1.88,"best_bookie":"Betfair","confidence":54,"value":"Medium","bet_type":"over","analysis":"reason"}}],"risky":[{{"event":"Team G vs Team H","bet":"Team H upset","odds":3.5,"best_bookie":"Coral","confidence":32,"value":"High","bet_type":"win","analysis":"reason"}}]}}""",
+
+    "golf": lambda today, intel: f"""Expert golf betting analyst. Today: {today}.
+HISTORY: {intel}
+Search: "PGA Tour {today} tips top 10 h2h value picks"
+Pick 4 golf bets: 1 BEST, 2 MEDIUM, 1 RISKY.
+Output ONLY valid JSON (no markdown):
+{{"best":[{{"event":"Tournament - Player","bet":"Top 10","odds":2.5,"best_bookie":"Bet365","confidence":45,"value":"High","bet_type":"top_10","analysis":"reason"}}],"medium":[{{"event":"Tournament - Player A vs B","bet":"Player A H2H","odds":1.8,"best_bookie":"Paddy Power","confidence":55,"value":"Medium","bet_type":"h2h","analysis":"reason"}},{{"event":"Tournament - Player","bet":"Top 10","odds":3.0,"best_bookie":"William Hill","confidence":38,"value":"High","bet_type":"top_10","analysis":"reason"}}],"risky":[{{"event":"Tournament - Player","bet":"Top 5","odds":5.0,"best_bookie":"Coral","confidence":25,"value":"High","bet_type":"top_5","analysis":"reason"}}]}}""",
+}
+
+# ── Main Analysis — ONE CALL PER SPORT with delay ─────────────────────────────
 def analyse_all_sports(odds_data, intelligence):
     today = datetime.now().strftime("%A %d %B %Y")
-    nba_str = json.dumps(odds_data.get("nba",[])[:4], indent=1)
-    nfl_str = json.dumps(odds_data.get("nfl",[])[:3], indent=1)
+    results = {"date": today}
+    nba_odds_str = json.dumps(odds_data.get("nba", [])[:3], indent=1)
 
-    prompt = f"""Expert UK sports betting AI. Today is {today}.
-HISTORY: {intelligence}
-NBA: {nba_str}
-NFL: {nfl_str}
+    sport_order = ["horse_racing", "nfl", "nba", "golf"]
 
-Pick 4 bets per sport (16 total). Search web for current info.
-Search: "horse racing tips {today} UK nap value"
-Search: "NBA picks {today} best bets"
-Search: "NFL 2026 futures draft odds best value"
-Search: "PGA Tour {today} tips top 10 h2h odds"
+    for i, sport in enumerate(sport_order):
+        print(f"  Analysing {sport}...")
 
-Each sport tiers: BEST(1) MEDIUM(2) RISKY(1).
-Each pick needs: event, bet, odds(decimal), best_bookie, confidence(%), value(High/Medium), bet_type, analysis(1 sentence).
+        # Build prompt per sport
+        if sport == "nba":
+            prompt = SPORT_PROMPTS["nba"](today, intelligence, nba_odds_str)
+        else:
+            prompt = SPORT_PROMPTS[sport](today, intelligence)
 
-Output ONLY valid JSON:
-{{"date":"{today}","horse_racing":{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":3.5,"best_bookie":"Paddy Power","confidence":52,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":33,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}},"nfl":{{"best":[{{"event":"NFL Future","bet":"Team X Super Bowl","odds":6.0,"best_bookie":"Bet365","confidence":25,"value":"High","bet_type":"future","analysis":"reason"}}],"medium":[{{"event":"NFL Draft","bet":"Player top 5","odds":2.5,"best_bookie":"Coral","confidence":45,"value":"High","bet_type":"future","analysis":"reason"}},{{"event":"NFL Season","bet":"Team over 9.5 wins","odds":1.9,"best_bookie":"William Hill","confidence":55,"value":"Medium","bet_type":"future","analysis":"reason"}}],"risky":[{{"event":"NFL Future","bet":"Team division","odds":4.0,"best_bookie":"Ladbrokes","confidence":30,"value":"High","bet_type":"future","analysis":"reason"}}]}},"nba":{{"best":[{{"event":"Team A vs Team B","bet":"Team A Win","odds":1.85,"best_bookie":"Bet365","confidence":58,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Team C vs Team D","bet":"Team C -4.5","odds":1.9,"best_bookie":"William Hill","confidence":52,"value":"Medium","bet_type":"spread","analysis":"reason"}},{{"event":"Team E vs Team F","bet":"Over 224.5","odds":1.88,"best_bookie":"Betfair","confidence":54,"value":"Medium","bet_type":"over","analysis":"reason"}}],"risky":[{{"event":"Team G vs Team H","bet":"Team H upset","odds":3.5,"best_bookie":"Coral","confidence":32,"value":"High","bet_type":"win","analysis":"reason"}}]}},"golf":{{"best":[{{"event":"Tournament - Player","bet":"Top 10","odds":2.5,"best_bookie":"Bet365","confidence":45,"value":"High","bet_type":"top_10","analysis":"reason"}}],"medium":[{{"event":"Tournament - Player A vs B","bet":"Player A H2H","odds":1.8,"best_bookie":"Paddy Power","confidence":55,"value":"Medium","bet_type":"h2h","analysis":"reason"}},{{"event":"Tournament - Player","bet":"Top 10","odds":3.0,"best_bookie":"William Hill","confidence":38,"value":"High","bet_type":"top_10","analysis":"reason"}}],"risky":[{{"event":"Tournament - Player","bet":"Top 5","odds":5.0,"best_bookie":"Coral","confidence":25,"value":"High","bet_type":"top_5","analysis":"reason"}}]}}}}"""
-
-    for attempt in range(3):
         try:
-            message = client.messages.create(
-                model="claude-sonnet-4-5", max_tokens=2500,
-                tools=[{"type":"web_search_20250305","name":"web_search"}],
-                messages=[{"role":"user","content":prompt}]
+            message = claude_call_with_retry(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,   # tight limit — just 4 picks per call
+                use_search=True
             )
-            break
-        except Exception as e:
-            if "rate_limit" in str(e).lower() and attempt < 2:
-                wait = 60 * (attempt + 1)
-                print(f"Rate limit — waiting {wait}s (retry {attempt+2}/3)...")
-                time.sleep(wait)
-            else:
-                raise
+            raw = extract_text(message)
 
-    raw = ""
-    for block in message.content:
-        if hasattr(block,"text"): raw = block.text
-    raw = raw.strip()
-    if "```" in raw:
-        for part in raw.split("```"):
-            part = part.strip()
-            if part.startswith("json"): part = part[4:].strip()
-            if part.startswith("{"): raw = part; break
-    start = raw.find("{"); end = raw.rfind("}") + 1
-    if start != -1 and end > start: raw = raw[start:end]
-    return json.loads(raw)
+            # Strip markdown fences if present
+            if "```" in raw:
+                for part in raw.split("```"):
+                    part = part.strip()
+                    if part.startswith("json"): part = part[4:].strip()
+                    if part.startswith("{"): raw = part; break
+
+            start = raw.find("{"); end = raw.rfind("}") + 1
+            if start != -1 and end > start:
+                results[sport] = json.loads(raw[start:end])
+                picks_count = sum(len(results[sport].get(t, [])) for t in ["best","medium","risky"])
+                print(f"  ✅ {sport}: {picks_count} picks")
+            else:
+                print(f"  ⚠️ {sport}: could not parse response")
+                results[sport] = {"best":[],"medium":[],"risky":[]}
+
+        except Exception as e:
+            print(f"  ❌ {sport} error: {e}")
+            results[sport] = {"best":[],"medium":[],"risky":[]}
+
+        # Wait 20s between each sport call to stay well under TPM limit
+        # (skip wait after the last sport)
+        if i < len(sport_order) - 1:
+            print(f"  ⏸ Waiting 20s before next sport...")
+            time.sleep(20)
+
+    return results
 
 # ── Save Picks ─────────────────────────────────────────────────────────────────
 def save_and_stake(picks):
@@ -604,47 +638,36 @@ def send_email(html_body, subject):
 def main():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] LFT Bot v5 starting...")
 
-    # Verify Supabase connection
     if not init_tables():
         print("ERROR: Cannot connect to Supabase — check credentials")
         return
 
-    # Seed historical data if needed (runs once, then skips forever)
     seed_if_empty()
 
-    # Check pending results
     print("Checking pending results...")
     check_pending_results()
 
-    # Evolve strategy
     print("Evolving strategy...")
     strategy_changes = evolve_strategy()
 
-    # Build intelligence from full Supabase history
     print("Building intelligence...")
     intelligence = build_intelligence()
 
-    # Fetch live odds
     print("Fetching live odds...")
     odds_data = fetch_live_odds()
 
-    # Analyse
-    print("Analysing all sports...")
+    print("Analysing all sports (1 call per sport, 20s gaps)...")
     picks = analyse_all_sports(odds_data, intelligence)
 
-    # Save + stake
     save_and_stake(picks)
 
-    # Stats
     week, month, sport_month = get_stats()
 
-    # Send
     tg_msg = format_telegram(picks, week, month, sport_month, strategy_changes)
     email_html = format_email_html(picks, week, month, sport_month, strategy_changes)
     send_telegram(tg_msg)
     send_email(email_html, f"🏆 LFT Daily Picks — {picks['date']}")
 
-    # Weekly Sunday report
     weekly = build_weekly_report()
     if weekly: send_telegram(weekly)
 
