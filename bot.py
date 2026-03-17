@@ -27,7 +27,6 @@ SPORTS = {
     "horse_racing": {"emoji": "🐴", "label": "Horse Racing"},
     "nfl":          {"emoji": "🏈", "label": "NFL"},
     "nba":          {"emoji": "🏀", "label": "NBA"},
-    "golf":         {"emoji": "⛳", "label": "Golf"},
 }
 
 # ── Supabase DB Layer ──────────────────────────────────────────────────────────
@@ -108,12 +107,12 @@ def extract_bet_type(bet):
     return "other"
 
 # ── Claude API call with retry + backoff ──────────────────────────────────────
-def claude_call_with_retry(messages, max_tokens=1200, use_search=True, max_retries=5):
+def claude_call_with_retry(messages, max_tokens=800, use_search=False, max_retries=5):
     """
     Wraps client.messages.create with exponential backoff on rate limit errors.
-    Keeps max_tokens low (default 1200) to reduce token burn per call.
+    Web search is OFF by default — it injects huge search results and blows the TPM limit.
+    Only enable use_search=True for the results-checker which needs live data.
     """
-    tools = [{"type": "web_search_20250305", "name": "web_search"}] if use_search else []
     for attempt in range(max_retries):
         try:
             kwargs = dict(
@@ -121,10 +120,10 @@ def claude_call_with_retry(messages, max_tokens=1200, use_search=True, max_retri
                 max_tokens=max_tokens,
                 messages=messages,
             )
-            if tools:
-                kwargs["tools"] = tools
+            if use_search:
+                kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
             return client.messages.create(**kwargs)
-        except anthropic_lib.RateLimitError as e:
+        except anthropic_lib.RateLimitError:
             if attempt == max_retries - 1:
                 raise
             wait = 30 * (2 ** attempt)   # 30s, 60s, 120s, 240s
@@ -351,51 +350,36 @@ def fetch_live_odds():
             odds_data[label] = []
     return odds_data
 
-# ── Per-Sport Prompts ──────────────────────────────────────────────────────────
+# ── Per-Sport Prompts (NO web search — keeps tokens tiny) ────────────────────
 SPORT_PROMPTS = {
-    "horse_racing": lambda today, intel: f"""Expert UK horse racing tipster. Today: {today}.
-HISTORY: {intel}
-Search: "horse racing tips {today} UK nap value selections"
-Pick 4 UK horse racing bets: 1 BEST, 2 MEDIUM, 1 RISKY.
-Use real race names, venues and times. Prefer each-way value at bigger prices.
-Output ONLY valid JSON (no markdown):
-{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":3.5,"best_bookie":"Paddy Power","confidence":52,"value":"High","bet_type":"win","analysis":"one sentence reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":33,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}}""",
+    "horse_racing": lambda today, intel: f"""UK horse racing tipster. Today: {today}. History: {intel}
+Pick 4 UK horse racing bets: 1 BEST, 2 MEDIUM, 1 RISKY. Use realistic UK venues/times.
+Output ONLY valid JSON, no markdown:
+{{"best":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":3.5,"best_bookie":"Paddy Power","confidence":52,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":5.0,"best_bookie":"Bet365","confidence":40,"value":"High","bet_type":"win","analysis":"reason"}},{{"event":"Horse - Venue HH:MM","bet":"EW","odds":8.0,"best_bookie":"William Hill","confidence":33,"value":"Medium","bet_type":"each_way","analysis":"reason"}}],"risky":[{{"event":"Horse - Venue HH:MM","bet":"Win","odds":12.0,"best_bookie":"Betfair","confidence":20,"value":"High","bet_type":"win","analysis":"reason"}}]}}""",
 
-    "nfl": lambda today, intel: f"""Expert NFL betting analyst. Today: {today}.
-HISTORY: {intel}
-Search: "NFL 2026 futures Super Bowl odds best value draft picks"
-Pick 4 NFL futures/draft bets: 1 BEST, 2 MEDIUM, 1 RISKY.
-Output ONLY valid JSON (no markdown):
+    "nfl": lambda today, intel: f"""NFL betting analyst. Today: {today}. History: {intel}
+Pick 4 NFL futures/draft value bets: 1 BEST, 2 MEDIUM, 1 RISKY.
+Output ONLY valid JSON, no markdown:
 {{"best":[{{"event":"NFL Future","bet":"Team X Super Bowl","odds":6.0,"best_bookie":"Bet365","confidence":25,"value":"High","bet_type":"future","analysis":"reason"}}],"medium":[{{"event":"NFL Draft","bet":"Player top 5","odds":2.5,"best_bookie":"Coral","confidence":45,"value":"High","bet_type":"future","analysis":"reason"}},{{"event":"NFL Season","bet":"Team over 9.5 wins","odds":1.9,"best_bookie":"William Hill","confidence":55,"value":"Medium","bet_type":"future","analysis":"reason"}}],"risky":[{{"event":"NFL Future","bet":"Team division","odds":4.0,"best_bookie":"Ladbrokes","confidence":30,"value":"High","bet_type":"future","analysis":"reason"}}]}}""",
 
-    "nba": lambda today, intel, odds_str="[]": f"""Expert NBA betting analyst. Today: {today}.
-HISTORY: {intel}
-LIVE ODDS: {odds_str}
-Search: "NBA picks {today} best bets predictions"
-Pick 4 NBA bets: 1 BEST, 2 MEDIUM, 1 RISKY. Use live odds above where possible.
-Output ONLY valid JSON (no markdown):
+    "nba": lambda today, intel, odds_str="[]": f"""NBA betting analyst. Today: {today}. History: {intel}
+Live odds: {odds_str}
+Pick 4 NBA bets: 1 BEST, 2 MEDIUM, 1 RISKY. Use live odds where available.
+Output ONLY valid JSON, no markdown:
 {{"best":[{{"event":"Team A vs Team B","bet":"Team A Win","odds":1.85,"best_bookie":"Bet365","confidence":58,"value":"High","bet_type":"win","analysis":"reason"}}],"medium":[{{"event":"Team C vs Team D","bet":"Team C -4.5","odds":1.9,"best_bookie":"William Hill","confidence":52,"value":"Medium","bet_type":"spread","analysis":"reason"}},{{"event":"Team E vs Team F","bet":"Over 224.5","odds":1.88,"best_bookie":"Betfair","confidence":54,"value":"Medium","bet_type":"over","analysis":"reason"}}],"risky":[{{"event":"Team G vs Team H","bet":"Team H upset","odds":3.5,"best_bookie":"Coral","confidence":32,"value":"High","bet_type":"win","analysis":"reason"}}]}}""",
-
-    "golf": lambda today, intel: f"""Expert golf betting analyst. Today: {today}.
-HISTORY: {intel}
-Search: "PGA Tour {today} tips top 10 h2h value picks"
-Pick 4 golf bets: 1 BEST, 2 MEDIUM, 1 RISKY.
-Output ONLY valid JSON (no markdown):
-{{"best":[{{"event":"Tournament - Player","bet":"Top 10","odds":2.5,"best_bookie":"Bet365","confidence":45,"value":"High","bet_type":"top_10","analysis":"reason"}}],"medium":[{{"event":"Tournament - Player A vs B","bet":"Player A H2H","odds":1.8,"best_bookie":"Paddy Power","confidence":55,"value":"Medium","bet_type":"h2h","analysis":"reason"}},{{"event":"Tournament - Player","bet":"Top 10","odds":3.0,"best_bookie":"William Hill","confidence":38,"value":"High","bet_type":"top_10","analysis":"reason"}}],"risky":[{{"event":"Tournament - Player","bet":"Top 5","odds":5.0,"best_bookie":"Coral","confidence":25,"value":"High","bet_type":"top_5","analysis":"reason"}}]}}""",
 }
 
-# ── Main Analysis — ONE CALL PER SPORT with delay ─────────────────────────────
+# ── Main Analysis — one call per sport, no web search, 15s gaps ──────────────
 def analyse_all_sports(odds_data, intelligence):
     today = datetime.now().strftime("%A %d %B %Y")
     results = {"date": today}
-    nba_odds_str = json.dumps(odds_data.get("nba", [])[:3], indent=1)
+    nba_odds_str = json.dumps(odds_data.get("nba", [])[:3])
 
-    sport_order = ["horse_racing", "nfl", "nba", "golf"]
+    sport_order = ["horse_racing", "nfl", "nba"]
 
     for i, sport in enumerate(sport_order):
         print(f"  Analysing {sport}...")
 
-        # Build prompt per sport
         if sport == "nba":
             prompt = SPORT_PROMPTS["nba"](today, intelligence, nba_odds_str)
         else:
@@ -404,8 +388,8 @@ def analyse_all_sports(odds_data, intelligence):
         try:
             message = claude_call_with_retry(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1000,   # tight limit — just 4 picks per call
-                use_search=True
+                max_tokens=800,
+                use_search=False   # NO web search — keeps input tokens tiny
             )
             raw = extract_text(message)
 
@@ -429,11 +413,10 @@ def analyse_all_sports(odds_data, intelligence):
             print(f"  ❌ {sport} error: {e}")
             results[sport] = {"best":[],"medium":[],"risky":[]}
 
-        # Wait 20s between each sport call to stay well under TPM limit
-        # (skip wait after the last sport)
+        # 15s gap between calls to stay under TPM limit
         if i < len(sport_order) - 1:
-            print(f"  ⏸ Waiting 20s before next sport...")
-            time.sleep(20)
+            print(f"  ⏸ Waiting 15s before next sport...")
+            time.sleep(15)
 
     return results
 
