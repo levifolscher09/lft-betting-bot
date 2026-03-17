@@ -190,10 +190,10 @@ Return ONLY JSON: {{"results":[{{"id":1,"result":"won"}},{{"id":2,"result":"lost
     try:
         message = claude_call_with_retry(
             messages=[{"role":"user","content":prompt}],
-            max_tokens=800
+            max_tokens=800,
+            use_search=False
         )
         raw = extract_text(message)
-        start = raw.find("{"); end = raw.rfind("}") + 1
         if start == -1: return
         data = json.loads(raw[start:end])
         for r in data.get("results",[]):
@@ -625,7 +625,7 @@ def main():
         print("ERROR: Cannot connect to Supabase — check credentials")
         return
 
-    seed_if_empty()
+    # Skip seeding — bot learns from real picks over time
 
     print("Checking pending results...")
     check_pending_results()
